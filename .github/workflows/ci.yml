@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualidade:
+    name: Qualidade (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Instalação reproduzível (npm ci)
+        run: npm ci
+
+      - name: Formatação (Prettier)
+        run: npm run format:check
+
+      - name: Análise estática (ESLint)
+        run: npm run lint
+
+      - name: Testes automatizados (node --test)
+        run: npm test
+
+      - name: Smoke test (/health e /api/features/9)
+        run: npm run test:smoke
+
+      - name: Auditoria de dependências
+        run: npm audit --audit-level=high
+
+  docker:
+    name: Build e teste da imagem Docker
+    needs: qualidade
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Construir imagem
+        run: docker build --pull -t lab40:feature09 -t lab40:${{ github.sha }} .
+
+      - name: Executar container efêmero
+        run: docker run -d --name lab40-ci -p 3000:3000 lab40:${{ github.sha }}
+
+      - name: Validar /health
+        run: |
+          for i in $(seq 1 20); do
+            curl --fail --silent http://localhost:3000/health && exit 0
+            sleep 1
+          done
+          docker logs lab40-ci
+          exit 1
+
+      - name: Validar endpoint da feature 09
+        run: |
+          curl --fail --silent -X POST http://localhost:3000/api/features/9 \
+            -H "Content-Type: application/json" \
+            -d '{"texto":"FATEC"}'
+
+      - name: Logs e encerramento do container
+        if: always()
+        run: |
+          docker logs lab40-ci || true
+          docker rm -f lab40-ci || true
+
+      - name: Exportar imagem (.tar)
+        run: docker save lab40:feature09 lab40:${{ github.sha }} -o lab40-feature09.tar
+
+      - name: Armazenar imagem como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab40-image
+          path: lab40-feature09.tar
+          retention-days: 3
