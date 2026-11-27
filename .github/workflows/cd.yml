@@ -1,0 +1,78 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+jobs:
+  entrega:
+    name: Entrega simulada
+    runs-on: ubuntu-latest
+    environment: producao-simulada
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalação reproduzível (npm ci)
+        run: npm ci
+
+      - name: Portão de qualidade (lint + testes + smoke)
+        run: |
+          npm run lint
+          npm test
+          npm run test:smoke
+
+      - name: Construir imagem
+        run: docker build --pull -t lab40:feature09 -t lab40:${{ github.sha }} .
+
+      - name: Verificar container antes da entrega
+        run: |
+          docker run -d --name lab40-cd -p 3000:3000 lab40:${{ github.sha }}
+          for i in $(seq 1 20); do
+            curl --fail --silent http://localhost:3000/health && break
+            sleep 1
+          done
+          curl --fail --silent -X POST http://localhost:3000/api/features/9 \
+            -H "Content-Type: application/json" -d '{"texto":"FATEC"}'
+          docker rm -f lab40-cd
+
+      - name: Gerar pacote e registro de entrega
+        run: |
+          mkdir -p entrega
+          docker save lab40:feature09 lab40:${{ github.sha }} -o entrega/lab40-feature09.tar
+          {
+            echo "LAB40 - Registro de entrega (CD simulado)"
+            echo "Repositorio: ${{ github.repository }}"
+            echo "Referencia:  ${{ github.ref }}"
+            echo "Commit SHA:  ${{ github.sha }}"
+            echo "Tags:        lab40:feature09, lab40:${{ github.sha }}"
+            echo "Executado por: ${{ github.actor }}"
+            echo "Execucao:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Data (UTC):  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "SHA256 do .tar: $(sha256sum entrega/lab40-feature09.tar | cut -d' ' -f1)"
+          } > entrega/deployment-record.txt
+          cat entrega/deployment-record.txt
+
+      - name: Implantação simulada
+        run: echo "Imagem lab40:${{ github.sha }} entregue no ambiente producao-simulada."
+
+      - name: Publicar artefato da entrega
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab40-delivery-record
+          path: entrega/
+          retention-days: 7
